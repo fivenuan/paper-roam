@@ -4,7 +4,7 @@ A personal research assistant for discovering papers, exploring across fields, a
 
 ## 第一阶段：摘要级论文推荐
 
-需要 Python 3.10 或更新版本。命令行只使用 Python 标准库。
+需要 Python 3.10 或更新版本。摘要推荐只使用 Python 标准库。
 先在运行环境配置 `DEEPSEEK_API_KEY`。Windows 上也可以读取已配置的用户环境变量。
 `OPENALEX_API_KEY` 可选。未配置时使用 OpenAlex 的免认证查询额度。
 
@@ -44,6 +44,50 @@ python paper_roam.py "我不知道今天该看什么论文"
 默认最多推荐四篇，也可以要求一至四篇。报告会显示每篇的入选路线、索引学科、来源链接、推荐理由和摘要原文。跨领域要求以 OpenAlex 学科标签作近似判断，用户是否熟悉某一领域需要结合用户提供的信息。找不到合适的候选或某一路查询失败时，结果会标出缺口。
 
 无主题探索给每路一个独立的研究问题，额外显示每路抽到的学科起点，并尽量选择 OpenAlex 学科标签不同的论文。重复提问时，学科组合和检索词可能变化。
+
+## 第三阶段：全文取证与定向补搜
+
+摘要功能支持 Python 3.10 或更新版本。全文、混合检索和重排建议使用 Python 3.12。Windows 示例：
+
+```powershell
+uv venv --python 3.12
+uv pip install --python .venv/Scripts/python.exe -r requirements-retrieval.txt
+.venv/Scripts/python.exe paper_roam.py --deep "LongMemEval 如何测试信息更新？ https://arxiv.org/abs/2410.10813v2"
+.venv/Scripts/python.exe paper_roam.py --deep --pdf "paper.pdf" "拆解这篇论文的方法和局限"
+.venv/Scripts/python.exe paper_roam.py --deep "哪些研究评估对话助手如何处理用户改口？"
+```
+
+只需读 PDF 时，可以改装 `requirements.txt`。支持带版本的 arXiv 链接、DOI、OpenAlex 链接和用户提供的 PDF。DOI 和 OpenAlex 链接首先解析索引记录，再尝试 arXiv 和 OpenAlex 提供的开放 PDF。索引的其他站点可能需要用户下载 PDF。指定版本的 arXiv PDF 失败时尝试同版本摘要。扫描件暂需先做 OCR。
+
+正文按 PDF 页号切分。报告附所读版本、页码和原文选段。模型给出的摘录必须能在对应选段逐字找到，结论里的阿拉伯数字也要在摘录中出现。原文和解读可逐条对照，证据是否充分仍需结合原文判断。主题任务中模型可提出一次针对缺口的补搜。材料不可用或工具失败时交付已有证据并标明缺口。路线仍由 DeepSeek 判断，`--deep` 是手动指定细读的入口。可用 `--focus` 提供英文段落检索词。
+
+## 第四阶段：研究记忆、聊天和计算器
+
+```powershell
+python paper_roam.py --chat
+python paper_roam.py --remember "论文语言" "优先英文"
+python paper_roam.py --remember "论文语言" "优先中文"
+python paper_roam.py --memory-history "论文语言"
+python paper_roam.py --capture "以后 AI 记忆实验优先使用 LongMemEval"
+python paper_roam.py --with-memory "帮我找论文，我想看看长期记忆的评测"
+python paper_roam.py --calc "100 * (9 - 6) / 12"
+```
+
+同一聊天中的最近两轮可以参与后续请求。聊天支持 `/记住 键=值`、`/提取 原话`、`/记忆 关键词`、`/计算 算式`、`/退出`。提取出的候选需要逐条确认。同一键写入相同值不会新增版本，明确改口会保留历史并使用最新值。SQLite 默认保存在用户目录下的 `.paperroam/memory.sqlite3`，可用 `--db` 指定路径。新命令或聊天默认不读取旧记忆，用 `--with-memory` 可显式读取。聊天中写入后，本聊天后续请求可以使用已确认记忆。只在记忆启用时才将选中的确认记录发给生成模型。
+
+计算器只支持有限的数值算术。全文任务里模型可以请本地计算器算一次并继续回答。暂时性网络错误最多重试一次，报告保留已取得的证据和仍未核实的事项。
+
+## 第五阶段：检索与记忆对照
+
+```powershell
+.venv/Scripts/python.exe paper_roam.py --deep --retrieval reranked "https://arxiv.org/abs/2410.10813v2"
+.venv/Scripts/python.exe roam_eval.py --live --output "$env:TEMP/paperroam-eval.json"
+.venv/Scripts/python.exe roam_eval.py --live --reranker api --output "$env:TEMP/paperroam-eval-api.json"
+```
+
+全文默认用 BM25。`--retrieval hybrid` 增加本地多语言向量召回和 RRF 合并。`--retrieval reranked` 在合并候选上再重排，默认用本地 MiniLM，也可加 `--reranker api` 改用 DeepSeek。首次使用本地模型会下载权重。Windows 连接反复中断时可在本次终端设置 `$env:HF_HUB_DISABLE_XET='1'` 后重新运行。权重缓存可复用。
+
+实验固定论文版本、标准答案、证据位置和生成模型，记录前 3 条证据命中、回答正确率、Token、耗时和估算费用。`--live` 会实际调用付费 API，`--rate peak` 可切换费用估算费率。见[实测结果和开发记录](docs/evaluation/2026-11-22.md)。
 
 ## 项目目标
 
@@ -123,4 +167,4 @@ flowchart TD
 - **探索新兴趣**：一句「我不知道看什么」能得到来源真实、方向有差异的阅读入口，每项有明确推荐理由。
 - **补搜与恢复**：核实某篇论文的依据后，继续完成原交付物。工具超时或预算耗尽时，保留已核实结果并说明缺口。
 - **检索增量**：固定问题集、论文集和生成模型，比较 BM25、混合检索与重排对前几名证据命中率、结论支持情况和耗时的影响。
-- **记忆增量**：固定模型和文献流程，对比有无长期记忆时的正确率、Token 用量、延迟和费用。覆盖跨会话偏好、明确改口和缺少证据的情况。
+- **记忆增量**：固定模型和文献流程，对比有无长期记忆时的正确率、Token 用量、延迟和费用。覆盖显式读取的已确认偏好、明确改口和缺少证据的情况。
