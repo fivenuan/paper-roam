@@ -20,6 +20,12 @@ ATTENTION_TOPIC = re.compile(
     r"transformer[\s-]+attention)\b|attention\s*机制|注意力机制|(?:自|多头|交叉)注意力",
     re.IGNORECASE,
 )
+RECENT_TOPIC = re.compile(
+    r"最新|近期|最近|(?:过去|近|最近|过去的)\s*(?:一|1)\s*年|"
+    r"(?:过去|近)\s*(?:十二|12)\s*个?月|\b(?:latest|newest|recent|"
+    r"(?:past|last)\s+(?:year|12\s+months))\b",
+    re.IGNORECASE,
+)
 ROUTES = {
     "direct": "直接相关",
     "adjacent": "相似机制",
@@ -51,6 +57,7 @@ class Paper:
     abstract: str
     field: str
     citations: int | None
+    published_on: date | None = None
 
 
 def api_setting(name):
@@ -140,7 +147,7 @@ limit 按用户要的篇数填写，未指定填 4，范围 1 到 4。
 用户明确要求陌生领域或跨领域时，require_cross_field 填 true。
 如果用户明确要求从某年开始，两种科研路线都额外返回整数 min_year。
 例如「不要推荐 2017 年之前的论文」填 2017，「2020 年之后」填 2021。
-没有明确起始年份时省略 min_year；不要把日期或推荐数量放进查询词。
+没有明确起始年份时省略 min_year；不要把「最新」、日期或推荐数量放进查询词。
 闲聊或只要求精读指定论文时，返回
 {"route":"other","query":""}。只输出 JSON。
 """,
@@ -193,7 +200,18 @@ def source_link(url, host):
         return False
 
 
-def search_papers(query, *, route=None, min_year=None):
+def recent_window(*texts):
+    if not any(RECENT_TOPIC.search(value) for value in texts):
+        return None
+    today = date.today()
+    try:
+        start = today.replace(year=today.year - 1)
+    except ValueError:
+        start = date(today.year - 1, 2, 28)
+    return start, today
+
+
+def search_papers(query, *, route=None, min_year=None, window=None):
     current_year = date.today().year
     if ATTENTION_TOPIC.search(query):
         min_year = max(min_year or 0, ATTENTION_MIN_YEAR)
@@ -205,8 +223,15 @@ def search_papers(query, *, route=None, min_year=None):
         "filter": "is_retracted:false,type:" + "|".join(PAPER_TYPES),
         "select": "id,doi,display_name,publication_year,type,is_retracted,abstract_inverted_index,primary_topic,cited_by_count",
     }
-    if min_year is not None:
-        params["filter"] += f",from_publication_date:{min_year}-01-01"
+    start = date(min_year, 1, 1) if min_year is not None else None
+    if window is not None:
+        start = max(start or window[0], window[0])
+        if start > window[1]:
+            return []
+        params["filter"] += f",to_publication_date:{window[1].isoformat()}"
+    if start is not None:
+        params["filter"] += f",from_publication_date:{start.isoformat()}"
+    params["select"] += ",publication_date"
     result = request_json(
         f"https://api.openalex.org/works?{urlencode(params)}",
         service="OpenAlex",
@@ -221,6 +246,10 @@ def search_papers(query, *, route=None, min_year=None):
         paper_id = work.get("id")
         title = work.get("display_name")
         year = work.get("publication_year")
+        try:
+            published_on = date.fromisoformat(work.get("publication_date") or "")
+        except (TypeError, ValueError):
+            published_on = None
         if (
             work.get("is_retracted") or work.get("type") not in PAPER_TYPES
             or not source_link(paper_id, "openalex.org") or not isinstance(title, str) or not title.strip()
@@ -230,6 +259,8 @@ def search_papers(query, *, route=None, min_year=None):
         if ATTENTION_TOPIC.search(title):
             cutoff = max(cutoff or 0, ATTENTION_MIN_YEAR)
         if cutoff is not None and (type(year) is not int or year < cutoff):
+            continue
+        if window is not None and (published_on is None or not start <= published_on <= window[1]):
             continue
         abstract = abstract_text(work.get("abstract_inverted_index"))
         if not abstract:
@@ -245,6 +276,7 @@ def search_papers(query, *, route=None, min_year=None):
             abstract=abstract,
             field=((work.get("primary_topic") or {}).get("field") or {}).get("display_name") or "",
             citations=work.get("cited_by_count"),
+            published_on=published_on,
         ))
     def recency_and_citations(paper):
         year = paper.year if type(paper.year) is int else 0
@@ -352,12 +384,18 @@ def explore(interest, plan, api_key):
         labels["adjacent"] = "另一学科视角"
     papers = {}
     errors = {}
+    windows = {}
     for route, query in queries.items():
         try:
             min_year = plan.get("min_year")
             if route == "direct" and ATTENTION_TOPIC.search(interest):
                 min_year = max(min_year or 0, ATTENTION_MIN_YEAR)
-            papers[route] = {paper.id: paper for paper in search_papers(query, route=route, min_year=min_year)}
+            windows[route] = recent_window(interest, query)
+            papers[route] = {
+                paper.id: paper for paper in search_papers(
+                    query, route=route, min_year=min_year, window=windows[route],
+                )
+            }
         except PaperRoamError as error:
             papers[route] = {}
             errors[route] = str(error)
@@ -420,7 +458,8 @@ impact 和 novel 优先挑主学科不同于 direct 的候选。每路最多选�
                 status = "本轮未入选"
         seed = plan.get("discovery_seeds", {}).get(route)
         starting_point = f"学科起点：{seed}。" if seed else ""
-        print(f"- {labels[route]}：{status}。{starting_point}检索词：{query}")
+        date_note = f"。近一年窗口：{windows[route][0]} 至 {windows[route][1]}" if windows[route] else ""
+        print(f"- {labels[route]}：{status}。{starting_point}检索词：{query}{date_note}")
     if plan.get("require_cross_field"):
         print("\n已覆盖不同学科（按 OpenAlex 标签）。" if cross_field else "\n未找到可确认的跨领域推荐。")
     if len(selected) < plan["limit"]:
@@ -477,7 +516,7 @@ def assemble_exploration(choices, plan):
 
 def print_recommendation(number, recommendation, *, route_label=None):
     paper, reason, evidence = recommendation
-    details = ", ".join(str(value) for value in (paper.year, paper.kind, paper.field) if value)
+    details = ", ".join(str(value) for value in (paper.published_on or paper.year, paper.kind, paper.field) if value)
     suffix = f" ({details})" if details else ""
     label = f"【{route_label}】" if route_label else ""
     print(f"{number}. {label}{paper.title}{suffix}")
@@ -507,8 +546,11 @@ def main(argv=None, *, api_key=None):
         if plan["route"] == "explore":
             return explore(interest, plan, api_key)
         query = plan["query"]
-        papers = search_papers(query, min_year=plan["min_year"])
+        window = recent_window(interest, query)
+        papers = search_papers(query, min_year=plan["min_year"], window=window)
         if not papers:
+            if window:
+                print(f"近一年窗口：{window[0]} 至 {window[1]}。")
             print("本轮没有找到附有作者摘要的候选论文。")
             return 0
         recommendations = recommend(interest, papers, api_key)
@@ -516,7 +558,10 @@ def main(argv=None, *, api_key=None):
         print(error, file=sys.stderr)
         return 1
 
-    print(f"# 阅读清单（作者摘要）\n\nOpenAlex 检索词：{query}\n")
+    print(f"# 阅读清单（作者摘要）\n\nOpenAlex 检索词：{query}")
+    if window:
+        print(f"近一年窗口：{window[0]} 至 {window[1]}")
+    print()
     if not recommendations:
         print("本轮候选中没有足够相关的论文。")
     for number, recommendation in enumerate(recommendations, 1):

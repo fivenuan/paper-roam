@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import unittest
+from datetime import date
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -34,6 +35,38 @@ def pick(route, number):
 
 
 class ExplorationTests(unittest.TestCase):
+    def test_latest_query_requires_publication_date_inside_rolling_year(self):
+        class Today(date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 11, 22)
+
+        def dated_record(number, year, published_on):
+            return record(number, "Cognitive Science", publication_year=year, publication_date=published_on)
+
+        responses = [
+            model_result({"route": "recommend", "query": "cognitive science"}),
+            {"results": [
+                dated_record(1, 2017, "2017-07-01"),
+                dated_record(2, 2025, "2025-11-21"),
+                dated_record(3, 2025, "2025-11-22"),
+                dated_record(4, 2026, "2026-11-23"),
+                dated_record(5, 2026, None),
+            ]},
+            model_result({"picks": [{"id": "https://openalex.org/W3", "evidence_id": 1}]}),
+            model_result({"reasons": ["评估了对话记忆。"]}),
+        ]
+        with patch("paper_roam.date", Today), patch("paper_roam.request_json", side_effect=responses) as request:
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                code = paper_roam.main(["我想关注一下认知科学的最新进展"], api_key="test")
+        self.assertEqual(code, 0)
+        filters = parse_qs(urlsplit(request.call_args_list[1].args[0]).query)["filter"][0]
+        self.assertIn("from_publication_date:2025-11-22", filters)
+        self.assertIn("to_publication_date:2026-11-22", filters)
+        model_input = json.loads(request.call_args_list[2].kwargs["body"]["messages"][1]["content"])
+        self.assertEqual([paper["id"] for paper in model_input["candidates"]], ["https://openalex.org/W3"])
+        self.assertIn("2025-11-22", output.getvalue())
+
     def test_attention_excludes_pre_2017_papers_and_keeps_2017(self):
         responses = [
             model_result({"route": "recommend", "query": "transformer architectures"}),
