@@ -34,6 +34,45 @@ def pick(route, number):
 
 
 class ExplorationTests(unittest.TestCase):
+    def test_attention_excludes_pre_2017_papers_and_keeps_2017(self):
+        responses = [
+            model_result({"route": "recommend", "query": "transformer architectures"}),
+            {"results": [record(1, "Computer Science", publication_year=2016),
+                         record(2, "Computer Science", publication_year=2017)]},
+            model_result({"picks": [{"id": "https://openalex.org/W2", "evidence_id": 1}]}),
+            model_result({"reasons": ["这篇论文评估对话记忆。"]}),
+        ]
+        with patch("paper_roam.request_json", side_effect=responses) as request:
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                code = paper_roam.main(["推荐关于 attention 机制的论文"], api_key="test")
+        self.assertEqual(code, 0)
+        search = parse_qs(urlsplit(request.call_args_list[1].args[0]).query)
+        self.assertIn("from_publication_date:2017-01-01", search["filter"][0])
+        inputs = json.loads(request.call_args_list[2].kwargs["body"]["messages"][1]["content"])
+        self.assertEqual([paper["id"] for paper in inputs["candidates"]], ["https://openalex.org/W2"])
+        self.assertIn("2017", output.getvalue())
+
+    def test_general_request_can_set_a_newer_cutoff(self):
+        responses = [
+            model_result({"route": "recommend", "query": "urban planning", "min_year": 2023}),
+            {"results": [record(1, "Planning", publication_year=2022)]},
+            model_result({"picks": []}),
+        ]
+        with patch("paper_roam.request_json", side_effect=responses) as request:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = paper_roam.main(["推荐几篇城市规划论文，只看 2023 年及以后"], api_key="test")
+        self.assertEqual(code, 0)
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("from_publication_date%3A2023-01-01", request.call_args_list[1].args[0])
+
+    def test_recent_paper_can_outrank_older_paper_with_more_total_citations(self):
+        response = {"results": [
+            record(1, "Ecology", publication_year=2010, cited_by_count=100),
+            record(2, "Ecology", publication_year=2025, cited_by_count=40),
+        ]}
+        with patch("paper_roam.request_json", return_value=response):
+            papers = paper_roam.search_papers("ecological resilience")
+        self.assertEqual([paper.year for paper in papers], [2025, 2010])
     def test_topic_free_prompt_receives_distinct_discipline_seeds(self):
         response = model_result({
             "route": "explore", "queries": QUERIES, "limit": 4, "has_topic": False,
