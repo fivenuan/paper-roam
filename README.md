@@ -2,6 +2,29 @@
 
 A personal research assistant for discovering papers, exploring across fields, and tracing findings back to their sources.
 
+## 第一阶段：摘要级论文推荐
+
+需要 Python 3.10 或更新版本。命令行只使用 Python 标准库。
+先在运行环境配置 `DEEPSEEK_API_KEY`。Windows 上也可以读取已配置的用户环境变量。
+`OPENALEX_API_KEY` 可选。未配置时使用 OpenAlex 的免认证查询额度。
+
+```powershell
+python paper_roam.py "我想了解 AI 长期记忆"
+```
+
+程序先生成一组检索词，最多从 OpenAlex 取 10 条候选，再根据作者摘要推荐最多 3 篇。
+候选类型为文章、综述和预印本，并排除索引标记为已撤稿的记录。
+结果会显示实际检索词、文献链接、中文推荐理由和作者摘要中的原文依据。
+程序从索引取出原文，模型根据所选片段写理由。可以对照原文检查理由是否成立。
+链接优先使用索引记录中的 DOI，缺少 DOI 时使用 OpenAlex 记录链接。推荐范围限于摘要。
+如果没有足够相关的候选，命令会如实说明。
+
+运行本地测试：
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
 ## 项目目标
 
 PaperRoam 在本地运行，用普通大模型 API 做语言判断和生成。它能从具体问题、模糊兴趣或指定论文出发，主动搜索学术来源，找到值得读的工作，并把关键结论追溯到实际阅读的论文。它也能记住研究进度和项目决定，接着上一次继续。
