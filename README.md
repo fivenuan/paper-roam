@@ -87,7 +87,7 @@ python paper_roam.py --calc "100 * (9 - 6) / 12"
 
 全文默认用 BM25。`--retrieval hybrid` 增加本地多语言向量召回和 RRF 合并。`--retrieval reranked` 在合并候选上再重排，默认用本地 MiniLM，也可加 `--reranker api` 改用 DeepSeek。首次使用本地模型会下载权重。Windows 连接反复中断时可在本次终端设置 `$env:HF_HUB_DISABLE_XET='1'` 后重新运行。权重缓存可复用。
 
-实验固定论文版本、标准答案、证据位置和生成模型，记录前 3 条证据命中、回答正确率、Token、耗时和估算费用。`--live` 会实际调用付费 API，`--rate peak` 可切换费用估算费率。见[实测结果和开发记录](docs/evaluation/2026-11-22.md)。
+实验固定论文版本、标准答案、证据位置和生成模型，记录前 3 条证据命中、回答正确率、Token、耗时和估算费用。`--live` 会实际调用付费 API，`--rate peak` 可切换费用估算费率。使用 `--output` 可保存逐题结果。
 
 ## 项目目标
 
