@@ -34,6 +34,40 @@ def pick(route, number):
 
 
 class ExplorationTests(unittest.TestCase):
+    def test_topic_free_prompt_receives_distinct_discipline_seeds(self):
+        response = model_result({
+            "route": "explore", "queries": QUERIES, "limit": 4, "has_topic": False,
+        })
+        with patch("paper_roam.request_json", return_value=response) as request:
+            paper_roam.search_plan("我不知道今天该看什么论文", "test")
+        payload = json.loads(request.call_args.kwargs["body"]["messages"][1]["content"])
+        seeds = payload["discovery_seeds"]
+        self.assertEqual(set(seeds), set(QUERIES))
+        self.assertEqual(len(set(seeds.values())), 4)
+
+    def test_topic_free_selection_prefers_different_fields_over_model_rank(self):
+        primary = paper_roam.Paper(
+            id="lead", url="https://doi.org/10.1000/lead", title="Learning",
+            year=2024, kind="article", abstract="Abstract", field="Psychology", citations=7,
+        )
+        same_field = paper_roam.Paper(
+            id="same", url="https://doi.org/10.1000/same", title="Risk perception",
+            year=2024, kind="article", abstract="Abstract", field="Psychology", citations=9,
+        )
+        different = paper_roam.Paper(
+            id="other", url="https://doi.org/10.1000/other", title="Acoustic archives",
+            year=2024, kind="article", abstract="Abstract", field="History", citations=2,
+        )
+        choices = {
+            "direct": [(primary, "Abstract")],
+            "adjacent": [(same_field, "Abstract"), (different, "Abstract")],
+            "impact": [],
+            "novel": [],
+        }
+        selected, covered = paper_roam.assemble_exploration(choices, {"limit": 2, "has_topic": False})
+        self.assertEqual([paper.id for _, paper, _ in selected], ["lead", "other"])
+        self.assertTrue(covered)
+
     def test_four_searches_and_one_cross_field_slot_for_three_papers(self):
         plan = model_result({
             "route": "explore", "queries": QUERIES, "limit": 3, "require_cross_field": True,

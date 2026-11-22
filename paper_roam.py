@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import random
 import re
 import sys
 from dataclasses import dataclass
@@ -19,6 +20,15 @@ ROUTES = {
     "impact": "跨领域影响力",
     "novel": "跨领域创新",
 }
+DISCIPLINE_GROUPS = (
+    ("考古学", "历史学", "语言学"),
+    ("社会学", "教育学", "组织心理学"),
+    ("地质学", "海洋科学", "天文学"),
+    ("生态学", "动物行为", "植物科学"),
+    ("城市规划", "材料科学", "交通工程"),
+    ("公共卫生", "运动科学", "康复科学"),
+    ("声学", "光学", "应用数学"),
+)
 
 
 class PaperRoamError(Exception):
@@ -99,6 +109,8 @@ def ask_model(api_key, instructions, data, *, max_tokens):
 
 
 def search_plan(interest, api_key):
+    groups = random.sample(DISCIPLINE_GROUPS, len(ROUTES))
+    seeds = {route: random.choice(group) for route, group in zip(ROUTES, groups)}
     result = ask_model(
         api_key,
         """
@@ -112,14 +124,18 @@ def search_plan(interest, api_key):
 为四路各生成一条不同的短英文查询。direct 查主题本身。adjacent 查其他领域解决的相似问题或机制。
 impact 查另一学科值得了解的成熟主题。novel 查另一学科近期值得探索的新方法。
 impact 和 novel 应各选一个与主领域不同的具体学科主题，避免仅给「高影响力」「创新」等泛词。
-没有主题时，has_topic 填 false，direct 选一个具体的探索起点，adjacent 围绕其相似机制换领域，
-impact 与 novel 各选一个不同的方向。不要使用「近期进展」等过宽的通用查询。
+没有主题时，has_topic 填 false。使用 discovery_seeds 为每路指定的学科起点，
+分别独立提出一个具体研究问题，转成该学科的英文检索词。
+四路要研究不同的现象，使用不同的核心概念。不要把 direct 的主题延伸到其余三路，
+adjacent 在无主题时也应成为独立的学科阅读入口。
+有明确研究主题时，使用用户给的主题和偏好，忽略这些学科起点。
+不要使用「近期进展」等过宽的通用查询。
 limit 按用户要的篇数填写，未指定填 4，范围 1 到 4。
 用户明确要求陌生领域或跨领域时，require_cross_field 填 true。
 闲聊或只要求精读指定论文时，返回
 {"route":"other","query":""}。只输出 JSON。
 """,
-        {"interest": interest},
+        {"interest": interest, "discovery_seeds": seeds},
         max_tokens=500,
     )
     if result.get("route") == "other":
@@ -137,7 +153,12 @@ limit 按用户要的篇数填写，未指定填 4，范围 1 到 4。
         and type(limit) is int and 1 <= limit <= 4
         and type(result.get("require_cross_field", False)) is bool
     ):
-        return {**result, "queries": {route: queries[route].strip() for route in ROUTES}, "limit": limit}
+        return {
+            **result,
+            "queries": {route: queries[route].strip() for route in ROUTES},
+            "limit": limit,
+            "discovery_seeds": seeds if result.get("has_topic") is False else {},
+        }
     raise PaperRoamError("DeepSeek 返回了无效的检索计划。")
 
 
@@ -297,6 +318,7 @@ def explore(interest, plan, api_key):
     labels = {**ROUTES}
     if plan.get("has_topic") is False:
         labels["direct"] = "探索起点"
+        labels["adjacent"] = "另一学科视角"
     papers = {}
     errors = {}
     for route, query in queries.items():
@@ -318,7 +340,8 @@ def explore(interest, plan, api_key):
             api_key,
             """
 为用户筛选跨学科阅读入口。四路候选分别评估：direct 看是否贴近主题或适合入门，
-adjacent 看是否共享一个可说明的机制，impact 看是否属于另一学科且有代表性，
+adjacent 在有主题时看是否共享可说明的机制，无主题时按自己的检索词选择独立阅读入口。
+impact 看是否属于另一学科且有代表性，
 novel 看摘要是否描述了具体的新方法或发现。引用数仅作信号。
 每路先核对标题和摘要是否直接贴合该路检索词，再比较质量。偏题或证据不足时留空。
 impact 和 novel 优先挑主学科不同于 direct 的候选。每路最多选两个，首选在前，可空缺。
@@ -329,6 +352,7 @@ impact 和 novel 优先挑主学科不同于 direct 的候选。每路最多选�
 """,
             {
                 "interest": interest,
+                "has_topic": plan.get("has_topic", True),
                 "queries": queries,
                 "routes": {route: list(items.values()) for route, items in candidates.items()},
             },
@@ -359,7 +383,9 @@ impact 和 novel 优先挑主学科不同于 direct 的候选。每路最多选�
                 status = "没有可用摘要"
             else:
                 status = "本轮未入选"
-        print(f"- {labels[route]}：{status}。检索词：{query}")
+        seed = plan.get("discovery_seeds", {}).get(route)
+        starting_point = f"学科起点：{seed}。" if seed else ""
+        print(f"- {labels[route]}：{status}。{starting_point}检索词：{query}")
     if plan.get("require_cross_field"):
         print("\n已覆盖不同学科（按 OpenAlex 标签）。" if cross_field else "\n未找到可确认的跨领域推荐。")
     if len(selected) < plan["limit"]:
@@ -392,17 +418,22 @@ def assemble_exploration(choices, plan):
     ), None)
     reserved = distant if plan.get("require_cross_field") else None
     picked = [reserved] if reserved else []
+    fields = {reserved[1].field} if reserved else set()
     for route, alternatives in choices.items():
         if len(picked) >= plan["limit"]:
             break
         if reserved and route == reserved[0]:
             continue
         for paper, evidence in alternatives:
+            if plan.get("has_topic") is False and paper.field and paper.field in fields:
+                continue
             if route in ("impact", "novel") and anchor and not outside_direct_field(paper):
                 continue
             if any(same_paper(paper, existing) for _, existing, _ in picked):
                 continue
             picked.append((route, paper, evidence))
+            if paper.field:
+                fields.add(paper.field)
             break
     picked.sort(key=lambda item: list(ROUTES).index(item[0]))
     cross_field = any(route != "direct" and outside_direct_field(paper) for route, paper, _ in picked)
